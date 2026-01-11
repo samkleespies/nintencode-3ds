@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+*.o
+*.d
+*.elf
+*.3dsx
+*.smdh
+*.cia
+*.map
+*.lst
+
+# DevkitPro generated
+*.bin
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug logs
+*.log
+
+# Node modules (for proxy tools)
+node_modules/
+
+# Sensitive files
+.env
+*.key
