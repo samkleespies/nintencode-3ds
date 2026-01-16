@@ -1,13 +1,18 @@
+/*
+ * app_types.h - Core data types for chat messages and history
+ */
+
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
 
-#define MAX_MESSAGES 20
-#define MAX_TEXT 4096
-#define MAX_TOOL_INPUT 4096
-#define MAX_TOOL_ID 128
-#define MAX_TOOL_NAME 128
+/* Chat history limits */
+#define MAX_MESSAGES    20
+#define MAX_TEXT        4096
+#define MAX_TOOL_INPUT  4096
+#define MAX_TOOL_ID     128
+#define MAX_TOOL_NAME   128
 
 typedef enum {
   MSG_ROLE_USER = 0,

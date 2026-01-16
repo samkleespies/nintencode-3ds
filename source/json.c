@@ -1,12 +1,19 @@
+/*
+ * json.c - Minimal JSON parser based on JSMN
+ *
+ * JSMN (Jasmine) is a minimalist JSON parser that doesn't allocate memory.
+ * This file includes the core parser and helper functions for extracting values.
+ */
+
 #include "json.h"
 
 #include <ctype.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static jsmntok_t *jsmn_alloc_token(jsmn_parser *parser, jsmntok_t *tokens, unsigned int num_tokens) {
+static jsmntok_t *jsmn_alloc_token(jsmn_parser *parser, jsmntok_t *tokens,
+                                   unsigned int num_tokens) {
   if (parser->toknext >= num_tokens) {
     return NULL;
   }
@@ -32,11 +39,13 @@ void jsmn_init(jsmn_parser *parser) {
   parser->toksuper = -1;
 }
 
-static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *tokens, unsigned int num_tokens) {
+static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len,
+                                jsmntok_t *tokens, unsigned int num_tokens) {
   int start = parser->pos;
   for (; parser->pos < len; parser->pos++) {
     char c = js[parser->pos];
-    if (c == '\t' || c == '\r' || c == '\n' || c == ' ' || c == ',' || c == ']' || c == '}') {
+    if (c == '\t' || c == '\r' || c == '\n' || c == ' ' ||
+        c == ',' || c == ']' || c == '}') {
       break;
     }
     if (c < 32) {
@@ -55,7 +64,8 @@ static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len,
   return 0;
 }
 
-static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *tokens, unsigned int num_tokens) {
+static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len,
+                             jsmntok_t *tokens, unsigned int num_tokens) {
   int start = parser->pos;
   parser->pos++;
   for (; parser->pos < len; parser->pos++) {
@@ -81,7 +91,8 @@ static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len, js
   return -1;
 }
 
-int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *tokens, unsigned int num_tokens) {
+int jsmn_parse(jsmn_parser *parser, const char *js, size_t len,
+               jsmntok_t *tokens, unsigned int num_tokens) {
   for (; parser->pos < len; parser->pos++) {
     char c = js[parser->pos];
     switch (c) {
@@ -126,9 +137,7 @@ int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *token
       }
       case '"': {
         int r = jsmn_parse_string(parser, js, len, tokens, num_tokens);
-        if (r < 0) {
-          return r;
-        }
+        if (r < 0) return r;
         if (parser->toksuper != -1 && tokens != NULL) {
           tokens[parser->toksuper].size++;
         }
@@ -143,9 +152,7 @@ int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *token
         break;
       default: {
         int r = jsmn_parse_primitive(parser, js, len, tokens, num_tokens);
-        if (r < 0) {
-          return r;
-        }
+        if (r < 0) return r;
         if (parser->toksuper != -1 && tokens != NULL) {
           tokens[parser->toksuper].size++;
         }
@@ -153,6 +160,8 @@ int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *token
       }
     }
   }
+  
+  /* Check for unclosed structures */
   if (tokens != NULL) {
     for (unsigned int i = parser->toknext; i > 0; i--) {
       if (tokens[i - 1].start != -1 && tokens[i - 1].end == -1) {
@@ -186,7 +195,8 @@ static int json_skip_token(const jsmntok_t *tokens, int index) {
   return i;
 }
 
-int json_get_object_value(const char *json, const jsmntok_t *tokens, int object_index, const char *key) {
+int json_get_object_value(const char *json, const jsmntok_t *tokens,
+                          int object_index, const char *key) {
   if (tokens[object_index].type != JSMN_OBJECT) {
     return -1;
   }
@@ -209,39 +219,33 @@ int json_unescape(const char *input, size_t len, char *out, size_t out_size) {
     char c = input[i];
     if (c == '\\' && i + 1 < len) {
       char next = input[i + 1];
-      if (next == '"' || next == '\\' || next == '/') {
-        out[o++] = next;
-        i++;
-      } else if (next == 'b') {
-        out[o++] = '\b';
-        i++;
-      } else if (next == 'f') {
-        out[o++] = '\f';
-        i++;
-      } else if (next == 'n') {
-        out[o++] = '\n';
-        i++;
-      } else if (next == 'r') {
-        out[o++] = '\r';
-        i++;
-      } else if (next == 't') {
-        out[o++] = '\t';
-        i++;
-      } else if (next == 'u' && i + 5 < len) {
-        char buf[5] = {0};
-        memcpy(buf, input + i + 2, 4);
-        unsigned int code = 0;
-        if (sscanf(buf, "%x", &code) == 1) {
-          if (code < 128) {
-            out[o++] = (char)code;
-          } else {
-            out[o++] = '?';
+      switch (next) {
+        case '"':
+        case '\\':
+        case '/':
+          out[o++] = next;
+          i++;
+          break;
+        case 'b': out[o++] = '\b'; i++; break;
+        case 'f': out[o++] = '\f'; i++; break;
+        case 'n': out[o++] = '\n'; i++; break;
+        case 'r': out[o++] = '\r'; i++; break;
+        case 't': out[o++] = '\t'; i++; break;
+        case 'u':
+          if (i + 5 < len) {
+            char buf[5] = {0};
+            memcpy(buf, input + i + 2, 4);
+            unsigned int code = 0;
+            if (sscanf(buf, "%x", &code) == 1) {
+              out[o++] = (code < 128) ? (char)code : '?';
+            }
+            i += 5;
           }
-        }
-        i += 5;
-      } else {
-        out[o++] = next;
-        i++;
+          break;
+        default:
+          out[o++] = next;
+          i++;
+          break;
       }
     } else {
       out[o++] = c;
@@ -251,7 +255,8 @@ int json_unescape(const char *input, size_t len, char *out, size_t out_size) {
   return (int)o;
 }
 
-int json_get_string(const char *json, const jsmntok_t *tokens, int object_index, const char *key, char *out, size_t out_size) {
+int json_get_string(const char *json, const jsmntok_t *tokens,
+                    int object_index, const char *key, char *out, size_t out_size) {
   int value_index = json_get_object_value(json, tokens, object_index, key);
   if (value_index < 0) {
     return 0;
@@ -264,7 +269,8 @@ int json_get_string(const char *json, const jsmntok_t *tokens, int object_index,
   return json_unescape(json + tok->start, len, out, out_size) > 0;
 }
 
-int json_get_int(const char *json, const jsmntok_t *tokens, int object_index, const char *key, int *out_value) {
+int json_get_int(const char *json, const jsmntok_t *tokens,
+                 int object_index, const char *key, int *out_value) {
   int value_index = json_get_object_value(json, tokens, object_index, key);
   if (value_index < 0) {
     return 0;

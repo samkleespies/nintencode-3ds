@@ -1,3 +1,10 @@
+/*
+ * lua_runtime.c - Lua interpreter with citro2d graphics bindings
+ *
+ * Provides a sandboxed Lua environment for running games on the 3DS.
+ * Handles mode switching between console UI and hardware-accelerated graphics.
+ */
+
 #include "lua_runtime.h"
 
 #include "app_config.h"
@@ -13,17 +20,55 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Screen dimensions */
+#define SCREEN_WIDTH  400
+#define SCREEN_HEIGHT 240
+
+/* Text buffer size for citro2d text rendering */
+#define TEXT_BUFFER_SIZE 4096
+
+/* Graphics state */
 static lua_State *L = NULL;
 static C3D_RenderTarget *top_target = NULL;
 static C3D_RenderTarget *bot_target = NULL;
+static C2D_TextBuf g_textBuf = NULL;
+static int graphics_initialized = 0;
 static int game_running = 0;
 
+/* Input state (updated each frame) */
+static u32 keys_held = 0;
+static u32 keys_down = 0;
+
+/*
+ * Convert 0xRRGGBB hex color to citro2d format
+ */
 static u32 hex_to_c2d(u32 hex) {
   u8 r = (hex >> 16) & 0xFF;
   u8 g = (hex >> 8) & 0xFF;
   u8 b = hex & 0xFF;
   return C2D_Color32(r, g, b, 255);
 }
+
+/*
+ * Map key name string to 3DS key constant
+ */
+static u32 key_name_to_code(const char *name) {
+  if (strcmp(name, "a") == 0 || strcmp(name, "A") == 0) return KEY_A;
+  if (strcmp(name, "b") == 0 || strcmp(name, "B") == 0) return KEY_B;
+  if (strcmp(name, "x") == 0 || strcmp(name, "X") == 0) return KEY_X;
+  if (strcmp(name, "y") == 0 || strcmp(name, "Y") == 0) return KEY_Y;
+  if (strcmp(name, "l") == 0 || strcmp(name, "L") == 0) return KEY_L;
+  if (strcmp(name, "r") == 0 || strcmp(name, "R") == 0) return KEY_R;
+  if (strcmp(name, "up") == 0) return KEY_UP;
+  if (strcmp(name, "down") == 0) return KEY_DOWN;
+  if (strcmp(name, "left") == 0) return KEY_LEFT;
+  if (strcmp(name, "right") == 0) return KEY_RIGHT;
+  if (strcmp(name, "start") == 0) return KEY_START;
+  if (strcmp(name, "select") == 0) return KEY_SELECT;
+  return 0;
+}
+
+/* ========== Lua Graphics API ========== */
 
 static int lua_clear(lua_State *L) {
   u32 color = luaL_optinteger(L, 1, 0x000000);
@@ -61,9 +106,6 @@ static int lua_line(lua_State *L) {
   return 0;
 }
 
-static C2D_TextBuf g_textBuf = NULL;
-static C2D_Font g_font = NULL;
-
 static int lua_text(lua_State *L) {
   float x = luaL_checknumber(L, 1);
   float y = luaL_checknumber(L, 2);
@@ -71,7 +113,7 @@ static int lua_text(lua_State *L) {
   float size = luaL_optnumber(L, 4, 0.5);
   u32 color = luaL_optinteger(L, 5, 0xFFFFFF);
   
-  // Auto-convert pixel sizes to scale factor if value seems too large
+  /* Auto-convert if value looks like pixel size instead of scale factor */
   if (size > 10.0f) {
     size = size / 24.0f;
   }
@@ -79,7 +121,7 @@ static int lua_text(lua_State *L) {
   if (size > 3.0f) size = 3.0f;
   
   if (!g_textBuf) {
-    g_textBuf = C2D_TextBufNew(4096);
+    g_textBuf = C2D_TextBufNew(TEXT_BUFFER_SIZE);
   }
   C2D_TextBufClear(g_textBuf);
   
@@ -90,50 +132,23 @@ static int lua_text(lua_State *L) {
   return 0;
 }
 
-static u32 keys_held = 0;
-static u32 keys_down = 0;
+/* ========== Lua Input API ========== */
 
 static int lua_key_down(lua_State *L) {
   const char *name = luaL_checkstring(L, 1);
-  u32 key = 0;
-  
-  if (strcmp(name, "a") == 0 || strcmp(name, "A") == 0) key = KEY_A;
-  else if (strcmp(name, "b") == 0 || strcmp(name, "B") == 0) key = KEY_B;
-  else if (strcmp(name, "x") == 0 || strcmp(name, "X") == 0) key = KEY_X;
-  else if (strcmp(name, "y") == 0 || strcmp(name, "Y") == 0) key = KEY_Y;
-  else if (strcmp(name, "l") == 0 || strcmp(name, "L") == 0) key = KEY_L;
-  else if (strcmp(name, "r") == 0 || strcmp(name, "R") == 0) key = KEY_R;
-  else if (strcmp(name, "up") == 0) key = KEY_UP;
-  else if (strcmp(name, "down") == 0) key = KEY_DOWN;
-  else if (strcmp(name, "left") == 0) key = KEY_LEFT;
-  else if (strcmp(name, "right") == 0) key = KEY_RIGHT;
-  else if (strcmp(name, "start") == 0) key = KEY_START;
-  else if (strcmp(name, "select") == 0) key = KEY_SELECT;
-  
+  u32 key = key_name_to_code(name);
   lua_pushboolean(L, (keys_down & key) != 0);
   return 1;
 }
 
 static int lua_key_held(lua_State *L) {
   const char *name = luaL_checkstring(L, 1);
-  u32 key = 0;
-  
-  if (strcmp(name, "a") == 0 || strcmp(name, "A") == 0) key = KEY_A;
-  else if (strcmp(name, "b") == 0 || strcmp(name, "B") == 0) key = KEY_B;
-  else if (strcmp(name, "x") == 0 || strcmp(name, "X") == 0) key = KEY_X;
-  else if (strcmp(name, "y") == 0 || strcmp(name, "Y") == 0) key = KEY_Y;
-  else if (strcmp(name, "l") == 0 || strcmp(name, "L") == 0) key = KEY_L;
-  else if (strcmp(name, "r") == 0 || strcmp(name, "R") == 0) key = KEY_R;
-  else if (strcmp(name, "up") == 0) key = KEY_UP;
-  else if (strcmp(name, "down") == 0) key = KEY_DOWN;
-  else if (strcmp(name, "left") == 0) key = KEY_LEFT;
-  else if (strcmp(name, "right") == 0) key = KEY_RIGHT;
-  else if (strcmp(name, "start") == 0) key = KEY_START;
-  else if (strcmp(name, "select") == 0) key = KEY_SELECT;
-  
+  u32 key = key_name_to_code(name);
   lua_pushboolean(L, (keys_held & key) != 0);
   return 1;
 }
+
+/* ========== Lua System API ========== */
 
 static int lua_quit(lua_State *L) {
   (void)L;
@@ -142,40 +157,133 @@ static int lua_quit(lua_State *L) {
 }
 
 static int lua_screen_width(lua_State *L) {
-  lua_pushinteger(L, 400);
+  lua_pushinteger(L, SCREEN_WIDTH);
   return 1;
 }
 
 static int lua_screen_height(lua_State *L) {
-  lua_pushinteger(L, 240);
+  lua_pushinteger(L, SCREEN_HEIGHT);
   return 1;
 }
 
 static int lua_random(lua_State *L) {
   int min = luaL_checkinteger(L, 1);
   int max = luaL_checkinteger(L, 2);
-  if (max < min) { int t = min; min = max; max = t; }
+  if (max < min) {
+    int t = min;
+    min = max;
+    max = t;
+  }
   lua_pushinteger(L, min + (rand() % (max - min + 1)));
   return 1;
 }
 
 static void register_lua_api(lua_State *L) {
+  /* Graphics */
   lua_register(L, "clear", lua_clear);
   lua_register(L, "rect", lua_rect);
   lua_register(L, "circle", lua_circle);
   lua_register(L, "line", lua_line);
   lua_register(L, "text", lua_text);
   
+  /* Input */
   lua_register(L, "key_down", lua_key_down);
   lua_register(L, "key_held", lua_key_held);
   
+  /* System */
   lua_register(L, "quit", lua_quit);
   lua_register(L, "screen_width", lua_screen_width);
   lua_register(L, "screen_height", lua_screen_height);
   lua_register(L, "random", lua_random);
 }
 
-static int graphics_initialized = 0;
+/* ========== Graphics Mode Management ========== */
+
+/*
+ * Switch from console mode to citro2d graphics mode.
+ * Must be called before running any game.
+ */
+static void init_graphics(void) {
+  debug_log("init_graphics: starting, graphics_initialized=%d", graphics_initialized);
+  
+  /* Always fully reinitialize to avoid stale state */
+  if (graphics_initialized) {
+    debug_log("init_graphics: cleaning up previous state");
+    if (g_textBuf) {
+      C2D_TextBufDelete(g_textBuf);
+      g_textBuf = NULL;
+    }
+    C2D_Fini();
+    C3D_Fini();
+    gfxExit();
+    graphics_initialized = 0;
+  }
+  
+  /* Clear console before switching */
+  consoleClear();
+  gfxFlushBuffers();
+  gfxSwapBuffers();
+  gspWaitForVBlank();
+  
+  debug_log("init_graphics: calling gfxExit");
+  gfxExit();
+  
+  debug_log("init_graphics: initializing citro3d/citro2d");
+  gfxInitDefault();
+  gfxSet3D(false);
+  
+  C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+  C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+  C2D_Prepare();
+  
+  debug_log("init_graphics: creating render targets");
+  top_target = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
+  bot_target = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
+  
+  /* Clear both screens */
+  C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+  C2D_TargetClear(top_target, C2D_Color32(0, 0, 0, 255));
+  C2D_TargetClear(bot_target, C2D_Color32(0, 0, 0, 255));
+  C3D_FrameEnd(0);
+  
+  graphics_initialized = 1;
+  debug_log("init_graphics: done");
+}
+
+/*
+ * Switch from citro2d graphics mode back to console mode.
+ * Called after game exits.
+ */
+static void deinit_graphics(void) {
+  debug_log("deinit_graphics: starting, graphics_initialized=%d", graphics_initialized);
+  
+  if (!graphics_initialized) {
+    debug_log("deinit_graphics: not initialized, skipping");
+    return;
+  }
+  
+  if (g_textBuf) {
+    C2D_TextBufDelete(g_textBuf);
+    g_textBuf = NULL;
+  }
+  
+  C2D_Fini();
+  C3D_Fini();
+  gfxExit();
+  
+  /* Clear stale pointers */
+  top_target = NULL;
+  bot_target = NULL;
+  graphics_initialized = 0;
+  
+  /* Restore console mode */
+  gfxInitDefault();
+  ui_reinit_console();
+  
+  debug_log("deinit_graphics: done");
+}
+
+/* ========== Public API ========== */
 
 int lua_runtime_init(void) {
   return 1;
@@ -193,114 +301,45 @@ void lua_runtime_exit(void) {
   }
 }
 
-static void init_graphics(void) {
-  if (!graphics_initialized) {
-    debug_log("init_graphics: starting");
-    
-    consoleClear();
-    gfxFlushBuffers();
-    gfxSwapBuffers();
-    gspWaitForVBlank();
-    
-    debug_log("init_graphics: calling gfxExit");
-    gfxExit();
-    
-    debug_log("init_graphics: calling gfxInitDefault");
-    gfxInitDefault();
-    gfxSet3D(false);
-    
-    debug_log("init_graphics: calling C3D_Init");
-    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
-    
-    debug_log("init_graphics: calling C2D_Init");
-    C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
-    C2D_Prepare();
-    
-    debug_log("init_graphics: creating render targets");
-    top_target = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
-    bot_target = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
-    graphics_initialized = 1;
-    
-    debug_log("init_graphics: clearing screens");
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-    C2D_TargetClear(top_target, C2D_Color32(0, 0, 0, 255));
-    C2D_TargetClear(bot_target, C2D_Color32(0, 0, 0, 255));
-    C3D_FrameEnd(0);
-    
-    debug_log("init_graphics: done");
-  }
-}
-
-static void deinit_graphics(void) {
-  if (graphics_initialized) {
-    debug_log("deinit_graphics: starting");
-    
-    if (g_textBuf) {
-      debug_log("deinit_graphics: deleting text buffer");
-      C2D_TextBufDelete(g_textBuf);
-      g_textBuf = NULL;
-    }
-    
-    debug_log("deinit_graphics: calling C2D_Fini");
-    C2D_Fini();
-    
-    debug_log("deinit_graphics: calling C3D_Fini");
-    C3D_Fini();
-    
-    debug_log("deinit_graphics: calling gfxExit");
-    gfxExit();
-    
-    debug_log("deinit_graphics: calling gfxInitDefault");
-    gfxInitDefault();
-    
-    debug_log("deinit_graphics: calling ui_reinit_console");
-    ui_reinit_console();
-    graphics_initialized = 0;
-    
-    debug_log("deinit_graphics: done");
-  }
-}
-
 int lua_runtime_run(const char *script_path, char *error, size_t error_size) {
-  debug_log("lua_runtime_run: starting with script=%s", script_path);
+  debug_log("lua_runtime_run: script=%s", script_path);
   
+  /* Clear error buffer */
+  error[0] = '\0';
+  
+  /* Build full path */
   char full_path[512];
   snprintf(full_path, sizeof(full_path), "%s/%s", NINTENCODE_WORKDIR, script_path);
-  debug_log("lua_runtime_run: full_path=%s", full_path);
   
-  debug_log("lua_runtime_run: creating Lua state");
+  /* Create Lua state */
   L = luaL_newstate();
   if (!L) {
     snprintf(error, error_size, "Failed to create Lua state");
-    debug_log("lua_runtime_run: FAILED to create Lua state");
     return 0;
   }
   
-  debug_log("lua_runtime_run: opening libs");
   luaL_openlibs(L);
-  
-  debug_log("lua_runtime_run: registering API");
   register_lua_api(L);
   
-  debug_log("lua_runtime_run: loading script");
+  /* Load script */
   if (luaL_loadfile(L, full_path) != 0) {
     snprintf(error, error_size, "Load error: %s", lua_tostring(L, -1));
-    debug_log("lua_runtime_run: load error: %s", lua_tostring(L, -1));
+    debug_log("lua_runtime_run: %s", error);
     lua_close(L);
     L = NULL;
     return 0;
   }
   
-  debug_log("lua_runtime_run: executing script");
+  /* Execute script (defines update/draw) */
   if (lua_pcall(L, 0, 0, 0) != 0) {
     snprintf(error, error_size, "Run error: %s", lua_tostring(L, -1));
-    debug_log("lua_runtime_run: run error: %s", lua_tostring(L, -1));
+    debug_log("lua_runtime_run: %s", error);
     lua_close(L);
     L = NULL;
     return 0;
   }
   
-  debug_log("lua_runtime_run: checking for update/draw functions");
+  /* Check for required functions */
   lua_getglobal(L, "update");
   int has_update = lua_isfunction(L, -1);
   lua_pop(L, 1);
@@ -309,20 +348,17 @@ int lua_runtime_run(const char *script_path, char *error, size_t error_size) {
   int has_draw = lua_isfunction(L, -1);
   lua_pop(L, 1);
   
-  debug_log("lua_runtime_run: has_update=%d has_draw=%d", has_update, has_draw);
-  
   if (!has_update && !has_draw) {
-    snprintf(error, error_size, "Script must have update() or draw()");
-    debug_log("lua_runtime_run: no update or draw function");
+    snprintf(error, error_size, "Script must define update() or draw()");
     lua_close(L);
     L = NULL;
     return 0;
   }
   
-  debug_log("lua_runtime_run: calling init_graphics");
+  /* Switch to graphics mode */
   init_graphics();
   
-  debug_log("lua_runtime_run: entering game loop");
+  /* Game loop */
   game_running = 1;
   int frame_count = 0;
   
@@ -331,42 +367,43 @@ int lua_runtime_run(const char *script_path, char *error, size_t error_size) {
     keys_held = hidKeysHeld();
     keys_down = hidKeysDown();
     
+    /* SELECT exits game */
     if (keys_down & KEY_SELECT) {
       debug_log("lua_runtime_run: SELECT pressed, exiting");
-      game_running = 0;
       break;
     }
     
+    /* Call update() */
     if (has_update) {
       lua_getglobal(L, "update");
       if (lua_pcall(L, 0, 0, 0) != 0) {
-        snprintf(error, error_size, "update() error: %s", lua_tostring(L, -1));
-        debug_log("lua_runtime_run: update error: %s", lua_tostring(L, -1));
-        game_running = 0;
+        snprintf(error, error_size, "update(): %s", lua_tostring(L, -1));
+        debug_log("lua_runtime_run: %s", error);
         break;
       }
     }
     
+    /* Render frame */
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     C2D_SceneBegin(top_target);
-    
     C2D_TargetClear(top_target, C2D_Color32(0, 0, 0, 255));
     
+    /* Call draw() */
     if (has_draw) {
       lua_getglobal(L, "draw");
       if (lua_pcall(L, 0, 0, 0) != 0) {
-        snprintf(error, error_size, "draw() error: %s", lua_tostring(L, -1));
-        debug_log("lua_runtime_run: draw error: %s", lua_tostring(L, -1));
-        game_running = 0;
+        snprintf(error, error_size, "draw(): %s", lua_tostring(L, -1));
+        debug_log("lua_runtime_run: %s", error);
         break;
       }
     }
     
+    /* Bottom screen hint */
     C2D_SceneBegin(bot_target);
     C2D_TargetClear(bot_target, C2D_Color32(32, 32, 32, 255));
     
     if (!g_textBuf) {
-      g_textBuf = C2D_TextBufNew(4096);
+      g_textBuf = C2D_TextBufNew(TEXT_BUFFER_SIZE);
     }
     C2D_TextBufClear(g_textBuf);
     C2D_Text hint;
@@ -375,26 +412,17 @@ int lua_runtime_run(const char *script_path, char *error, size_t error_size) {
     C2D_DrawText(&hint, C2D_WithColor, 50, 110, 0, 0.5, 0.5, C2D_Color32(200, 200, 200, 255));
     
     C3D_FrameEnd(0);
-    
     frame_count++;
-    if (frame_count == 1) {
-      debug_log("lua_runtime_run: first frame rendered successfully");
-    }
   }
   
-  debug_log("lua_runtime_run: exited game loop after %d frames", frame_count);
+  debug_log("lua_runtime_run: exited after %d frames", frame_count);
   
-  debug_log("lua_runtime_run: calling deinit_graphics");
+  /* Switch back to console mode */
   deinit_graphics();
   
-  debug_log("lua_runtime_run: deinit_graphics returned");
-  
-  int had_error = (error[0] != '\0');
-  debug_log("lua_runtime_run: had_error=%d", had_error);
-  
+  /* Cleanup Lua */
   lua_close(L);
   L = NULL;
   
-  debug_log("lua_runtime_run: returning %d", had_error ? 0 : 1);
-  return had_error ? 0 : 1;
+  return (error[0] == '\0') ? 1 : 0;
 }

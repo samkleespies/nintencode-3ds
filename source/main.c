@@ -1,3 +1,10 @@
+/*
+ * main.c - Nintencode 3DS application entry point
+ *
+ * Implements the main chat loop with the Claude API.
+ * Handles user input, API communication, tool execution, and conversation history.
+ */
+
 #include <3ds.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,29 +33,64 @@ typedef struct {
 } ToolUse;
 
 static const char *SYSTEM_PROMPT = 
-  "You are Nintencode, an AI coding assistant on Nintendo 3DS. "
-  "You can read/write files and CREATE PLAYABLE GAMES using run_lua. "
-  "IMPORTANT: When asked to make a game, IMMEDIATELY write the .lua file, then call run_lua. Do NOT explain first. "
-  "Lua Graphics API: "
-  "clear(color) - fill screen with color. "
-  "rect(x,y,w,h,color) - draw filled rectangle. "
-  "circle(x,y,r,color) - draw filled circle. "
-  "line(x1,y1,x2,y2,thickness,color) - draw line. "
-  "text(x,y,str,size,color) - draw text, size is scale factor (use 0.5-1.0 for normal text, 1.5-2.0 for large). "
-  "Lua Input API: "
-  "key_held(name) - true if key held (a,b,x,y,l,r,up,down,left,right,start,select). "
-  "key_down(name) - true if key just pressed this frame. "
-  "Helpers: screen_width()=400, screen_height()=240, random(min,max), quit(). "
-  "Colors are hex: 0xRRGGBB (e.g. 0xFF0000=red, 0x00FF00=green, 0xFFFFFF=white). "
-  "Games must define update() and/or draw() functions. User presses SELECT to exit. "
-  "Be concise. Execute tools immediately without lengthy explanations.";
+  "You are Nintencode, an AI game creator running on Nintendo 3DS. "
+  "Your purpose: BUILD AND RUN playable games for the user.\n\n"
+  
+  "## ACTION-FIRST RULE\n"
+  "When user asks for a game: write_file -> run_lua. NO explanations first.\n"
+  "When user asks to fix/change: edit_file -> run_lua. Show results, not plans.\n\n"
+  
+  "## GAME STRUCTURE\n"
+  "```lua\n"
+  "-- Game state variables at top\n"
+  "local x, y = 200, 120\n\n"
+  "function update()\n"
+  "  -- Handle input, update state (called every frame)\n"
+  "  if key_held('left') then x = x - 2 end\n"
+  "end\n\n"
+  "function draw()\n"
+  "  -- Render graphics (called every frame after update)\n"
+  "  clear(0x000000)\n"
+  "  circle(x, y, 10, 0xFF0000)\n"
+  "end\n"
+  "```\n\n"
+  
+  "## GRAPHICS API\n"
+  "clear(color) - fill screen. "
+  "rect(x,y,w,h,color) - filled rectangle. "
+  "circle(x,y,r,color) - filled circle. "
+  "line(x1,y1,x2,y2,thickness,color) - line. "
+  "text(x,y,str,size,color) - text (size 0.5-1.0 normal, 1.5+ large).\n\n"
+  
+  "## INPUT API\n"
+  "key_held(name) - true while held. "
+  "key_down(name) - true on press frame only. "
+  "Keys: a,b,x,y,l,r,up,down,left,right,start,select.\n\n"
+  
+  "## HELPERS\n"
+  "screen_width()=400, screen_height()=240, random(min,max), quit().\n"
+  "Colors: 0xRRGGBB (0xFF0000=red, 0x00FF00=green, 0x0000FF=blue, 0xFFFFFF=white, 0x000000=black).\n\n"
+  
+  "## FILE TOOLS\n"
+  "Use grep_files to search code. Use edit_file for changes (not rewriting whole file). "
+  "User presses SELECT to exit game and return to chat.\n\n"
+  
+  "## RESPONSE STYLE\n"
+  "- Execute tools immediately, report results briefly\n"
+  "- After run_lua: 'Game running! Use arrows to move, A to jump.'\n"
+  "- On errors: fix and retry, don't just explain the problem";
 
 static const char *TOOLS_JSON = "["
   "{\"name\":\"read_file\",\"description\":\"Read a file from the working directory\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"]}},"
   "{\"name\":\"write_file\",\"description\":\"Write a file in the working directory\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}},"
+  "{\"name\":\"edit_file\",\"description\":\"Edit a file using search/replace. Provide old_text to find and new_text to replace with. Use replace_all:true for multiple occurrences.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"},\"replace_all\":{\"type\":\"boolean\"}},\"required\":[\"path\",\"old_text\"]}},"
   "{\"name\":\"list_files\",\"description\":\"List files in a directory\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},"
+  "{\"name\":\"grep_files\",\"description\":\"Search file contents for a pattern. Returns matching lines with file:line: prefix.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Text pattern to search for\"},\"path\":{\"type\":\"string\",\"description\":\"Directory to search (default: current)\"}},\"required\":[\"pattern\"]}},"
   "{\"name\":\"file_info\",\"description\":\"Show file size information\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}},"
   "{\"name\":\"create_directory\",\"description\":\"Create a directory\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}},"
+  "{\"name\":\"delete_file\",\"description\":\"Delete a file or empty directory\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}},"
+  "{\"name\":\"move_file\",\"description\":\"Move or rename a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\"},\"destination\":{\"type\":\"string\"}},\"required\":[\"source\",\"destination\"]}},"
+  "{\"name\":\"copy_file\",\"description\":\"Copy a file to a new location\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\"},\"destination\":{\"type\":\"string\"}},\"required\":[\"source\",\"destination\"]}},"
   "{\"name\":\"run_lua\",\"description\":\"Run a Lua game/script. The script must define update() and/or draw() functions. User presses SELECT to exit.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\",\"description\":\"Path to .lua file to run\"}},\"required\":[\"script\"]}}"
   "]";
 
@@ -85,6 +127,170 @@ static void history_add(ChatHistory *history, MessageRole role, MessageKind kind
   }
   if (tool_input) {
     strncpy(msg->tool_input, tool_input, sizeof(msg->tool_input) - 1);
+  }
+}
+
+/*
+ * Score a message's importance for pruning decisions.
+ * Higher scores mean more important (less likely to be pruned).
+ * Inspired by boing-code's smartPruning.ts
+ */
+static int score_message(const ChatMessage *msg, int index, int total) {
+  int score = 0;
+  
+  /* Recency bonus: more recent = more important */
+  /* Score from 0-50 based on position */
+  score += ((index + 1) * 50) / total;
+  
+  /* Tool usage bonus: tool interactions are important context */
+  if (msg->kind == MSG_KIND_TOOL_USE || msg->kind == MSG_KIND_TOOL_RESULT) {
+    score += 30;
+  }
+  
+  /* Error/warning bonus: critical context */
+  if (strstr(msg->text, "error") != NULL || strstr(msg->text, "Error") != NULL ||
+      strstr(msg->text, "fail") != NULL || strstr(msg->text, "Fail") != NULL) {
+    score += 20;
+  }
+  
+  /* Code block bonus */
+  if (strstr(msg->text, "```") != NULL || strstr(msg->text, "function") != NULL) {
+    score += 10;
+  }
+  
+  /* User questions are important */
+  if (msg->role == MSG_ROLE_USER && strchr(msg->text, '?') != NULL) {
+    score += 15;
+  }
+  
+  return score;
+}
+
+/*
+ * Check if message at index is part of a tool call/result pair.
+ * Returns: 1 if this is a tool_use that has a matching tool_result after it
+ *          2 if this is a tool_result that has a matching tool_use before it
+ *          0 otherwise
+ */
+static int is_tool_pair_member(const ChatHistory *history, int index) {
+  const ChatMessage *msg = &history->items[index];
+  
+  if (msg->kind == MSG_KIND_TOOL_USE) {
+    /* Look for matching tool_result after this message */
+    for (int j = index + 1; j < history->count; j++) {
+      if (history->items[j].kind == MSG_KIND_TOOL_RESULT &&
+          strcmp(history->items[j].tool_use_id, msg->tool_use_id) == 0) {
+        return 1;
+      }
+      /* Stop if we hit another user message */
+      if (history->items[j].role == MSG_ROLE_USER && 
+          history->items[j].kind == MSG_KIND_TEXT) {
+        break;
+      }
+    }
+  }
+  
+  if (msg->kind == MSG_KIND_TOOL_RESULT) {
+    /* Look for matching tool_use before this message */
+    for (int j = index - 1; j >= 0; j--) {
+      if (history->items[j].kind == MSG_KIND_TOOL_USE &&
+          strcmp(history->items[j].tool_use_id, msg->tool_use_id) == 0) {
+        return 2;
+      }
+      /* Stop if we hit a user message */
+      if (history->items[j].role == MSG_ROLE_USER && 
+          history->items[j].kind == MSG_KIND_TEXT) {
+        break;
+      }
+    }
+  }
+  
+  return 0;
+}
+
+/*
+ * Prune conversation history to reduce context size.
+ * Removes lowest-scoring messages while keeping tool_call/result pairs together.
+ * Called when API returns context_length_exceeded error.
+ */
+static void history_prune(ChatHistory *history) {
+  if (history->count <= 4) return; /* Keep at least 4 messages */
+  
+  /* Find lowest scoring message that's safe to remove */
+  int lowest_score = 9999;
+  int lowest_index = -1;
+  
+  for (int i = 0; i < history->count; i++) {
+    /* Never remove first or last 2 messages */
+    if (i == 0 || i >= history->count - 2) continue;
+    
+    /* Skip tool pair members - they must be removed together */
+    int pair_status = is_tool_pair_member(history, i);
+    if (pair_status != 0) continue;
+    
+    int score = score_message(&history->items[i], i, history->count);
+    if (score < lowest_score) {
+      lowest_score = score;
+      lowest_index = i;
+    }
+  }
+  
+  /* If no safe single message found, try to remove a tool pair */
+  if (lowest_index < 0) {
+    /* Find lowest scoring tool_use that has a result */
+    for (int i = 1; i < history->count - 2; i++) {
+      if (history->items[i].kind == MSG_KIND_TOOL_USE) {
+        int pair_status = is_tool_pair_member(history, i);
+        if (pair_status == 1) {
+          int score = score_message(&history->items[i], i, history->count);
+          if (score < lowest_score) {
+            lowest_score = score;
+            lowest_index = i;
+          }
+        }
+      }
+    }
+  }
+  
+  if (lowest_index < 0) return;
+  
+  /* Remove the message (and its pair if it's a tool_use) */
+  if (history->items[lowest_index].kind == MSG_KIND_TOOL_USE) {
+    /* Find and remove the matching result first */
+    for (int j = lowest_index + 1; j < history->count; j++) {
+      if (history->items[j].kind == MSG_KIND_TOOL_RESULT &&
+          strcmp(history->items[j].tool_use_id, 
+                 history->items[lowest_index].tool_use_id) == 0) {
+        /* Shift messages after j */
+        for (int k = j; k < history->count - 1; k++) {
+          history->items[k] = history->items[k + 1];
+        }
+        history->count--;
+        break;
+      }
+    }
+  }
+  
+  /* Remove the message at lowest_index */
+  for (int k = lowest_index; k < history->count - 1; k++) {
+    history->items[k] = history->items[k + 1];
+  }
+  history->count--;
+}
+
+/*
+ * Aggressively prune history - remove multiple messages.
+ * Called when context is way too long.
+ */
+static void history_prune_aggressive(ChatHistory *history) {
+  /* Remove up to half the messages */
+  int target = history->count / 2;
+  if (target < 4) target = 4;
+  
+  while (history->count > target) {
+    int old_count = history->count;
+    history_prune(history);
+    if (history->count == old_count) break; /* Safety: couldn't prune more */
   }
 }
 
@@ -301,6 +507,14 @@ static int run_chat_loop(ChatHistory *history) {
     ui_render();
 
     if (!net_post_json(NINTENCODE_API_URL, request, response, RESPONSE_BUFFER_SIZE, error, sizeof(error))) {
+      /* Check for context length error - prune and retry */
+      if (strstr(error, "Context too long") != NULL || strstr(error, "context_length") != NULL) {
+        ui_add_message("System:", "Context too long, pruning history...");
+        history_prune_aggressive(history);
+        ui_set_status("Retrying with pruned context...");
+        ui_render();
+        continue; /* Retry the loop with pruned history */
+      }
       ui_add_message("Error:", error);
       ui_set_status("Ready");
       ui_render();

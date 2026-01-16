@@ -1,3 +1,10 @@
+/*
+ * ui.h - Console-based chat UI
+ *
+ * Uses PrintConsole for the chat interface on top screen,
+ * controls and status on bottom screen.
+ */
+
 #pragma once
 
 #include <stddef.h>

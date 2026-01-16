@@ -1,3 +1,9 @@
+/*
+ * debug_log.h - Simple file-based debug logging to SD card
+ *
+ * Logs are written to sdmc:/nintencode/debug.log for troubleshooting.
+ */
+
 #pragma once
 
 #include <stdio.h>

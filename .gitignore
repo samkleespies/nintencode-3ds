@@ -29,6 +29,10 @@ Thumbs.db
 # Node modules (for proxy tools)
 node_modules/
 
-# Sensitive files
+# Sensitive files - API key is baked in here
+include/app_config.h
 .env
 *.key
+
+# Crash dumps
+crash_dump_*.dmp
