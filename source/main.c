@@ -390,36 +390,47 @@ static int build_request_json(const ChatHistory *history, char *out, size_t out_
 }
 
 static int skip_token(const jsmntok_t *tokens, int index) {
-  int i = index + 1;
-  if (tokens[index].type == JSMN_OBJECT) {
-    for (int j = 0; j < tokens[index].size; j++) {
-      i = skip_token(tokens, i);
-      i = skip_token(tokens, i);
+  /* Iterative version to avoid stack overflow on 3DS */
+  int skip_count = 1;  /* Number of tokens we need to skip */
+  int i = index;
+  
+  while (skip_count > 0) {
+    skip_count--;
+    
+    if (tokens[i].type == JSMN_OBJECT) {
+      /* Need to skip 2 tokens (key + value) for each member */
+      skip_count += tokens[i].size * 2;
+    } else if (tokens[i].type == JSMN_ARRAY) {
+      /* Need to skip 1 token for each element */
+      skip_count += tokens[i].size;
     }
-    return i;
+    i++;
   }
-  if (tokens[index].type == JSMN_ARRAY) {
-    for (int j = 0; j < tokens[index].size; j++) {
-      i = skip_token(tokens, i);
-    }
-    return i;
-  }
+  
   return i;
 }
 
 static int parse_response(const char *json, ChatHistory *history, ToolUse *tools, int *tool_count) {
+  debug_log("parse_response: starting");
+  
   jsmn_parser parser;
   jsmntok_t tokens[512];
   jsmn_init(&parser);
   int count = jsmn_parse(&parser, json, strlen(json), tokens, 512);
   if (count < 1 || tokens[0].type != JSMN_OBJECT) {
+    debug_log("parse_response: invalid json");
     return 0;
   }
 
+  debug_log("parse_response: parsed %d tokens", count);
+
   int content_index = json_get_object_value(json, tokens, 0, "content");
   if (content_index < 0 || tokens[content_index].type != JSMN_ARRAY) {
+    debug_log("parse_response: no content array");
     return 0;
   }
+
+  debug_log("parse_response: content array has %d items", tokens[content_index].size);
 
   int idx = content_index + 1;
   int tool_idx = 0;
@@ -428,6 +439,7 @@ static int parse_response(const char *json, ChatHistory *history, ToolUse *tools
     if (tokens[item_index].type == JSMN_OBJECT) {
       int type_index = json_get_object_value(json, tokens, item_index, "type");
       if (type_index >= 0 && json_token_streq(json, &tokens[type_index], "text")) {
+        debug_log("parse_response: found text block");
         char text[MAX_TEXT] = {0};
         json_get_string(json, tokens, item_index, "text", text, sizeof(text));
         if (strlen(text) > 0) {
@@ -435,16 +447,20 @@ static int parse_response(const char *json, ChatHistory *history, ToolUse *tools
           ui_add_message("Claude:", text);
         }
       } else if (type_index >= 0 && json_token_streq(json, &tokens[type_index], "tool_use")) {
+        debug_log("parse_response: found tool_use block");
         if (tool_idx < MAX_TOOL_CALLS) {
           ToolUse *tool = &tools[tool_idx++];
           memset(tool, 0, sizeof(ToolUse));
           json_get_string(json, tokens, item_index, "id", tool->id, sizeof(tool->id));
           json_get_string(json, tokens, item_index, "name", tool->name, sizeof(tool->name));
+          debug_log("parse_response: tool name=%s id=%s", tool->name, tool->id);
+          
           int input_index = json_get_object_value(json, tokens, item_index, "input");
           if (input_index >= 0) {
             int start = tokens[input_index].start;
             int end = tokens[input_index].end;
             int len = end - start;
+            debug_log("parse_response: input len=%d", len);
             if (len >= MAX_TOOL_INPUT_EXEC) {
               len = MAX_TOOL_INPUT_EXEC - 1;
             }
@@ -453,26 +469,34 @@ static int parse_response(const char *json, ChatHistory *history, ToolUse *tools
               memcpy(tool->input, json + start, len);
               tool->input[len] = '\0';
             }
+            debug_log("parse_response: input allocated");
           }
           if (!tool->input || tool->input[0] == '\0') {
             if (!tool->input) tool->input = (char *)malloc(3);
             if (tool->input) strcpy(tool->input, "{}");
           }
           history_add(history, MSG_ROLE_ASSISTANT, MSG_KIND_TOOL_USE, "", tool->id, tool->name, "{}");
+          debug_log("parse_response: tool added to history");
         }
       }
     }
+    debug_log("parse_response: calling skip_token for item %d", i);
     idx = skip_token(tokens, item_index);
+    debug_log("parse_response: skip_token returned %d", idx);
   }
 
   *tool_count = tool_idx;
+  debug_log("parse_response: done, tool_count=%d", tool_idx);
   return 1;
 }
 
 static int execute_tools(ChatHistory *history, ToolUse *tools, int tool_count) {
+  debug_log("execute_tools: count=%d", tool_count);
   for (int i = 0; i < tool_count; i++) {
+    debug_log("execute_tools: tool[%d] name=%s id=%s", i, tools[i].name, tools[i].id);
     char output[TOOL_BUFFER_SIZE] = {0};
     tool_execute(tools[i].name, tools[i].input, output, sizeof(output));
+    debug_log("execute_tools: tool[%d] done", i);
     history_add(history, MSG_ROLE_USER, MSG_KIND_TOOL_RESULT, output, tools[i].id, tools[i].name, NULL);
     ui_add_message("Tool:", output);
     if (tools[i].input) {
@@ -484,18 +508,25 @@ static int execute_tools(ChatHistory *history, ToolUse *tools, int tool_count) {
 }
 
 static int run_chat_loop(ChatHistory *history) {
+  debug_log("run_chat_loop: starting");
+  
   char *request = (char *)malloc(REQUEST_BUFFER_SIZE);
   char *response = (char *)malloc(RESPONSE_BUFFER_SIZE);
   char error[128] = {0};
 
   if (!request || !response) {
+    debug_log("run_chat_loop: malloc failed");
     ui_add_message("Error:", "Out of memory");
     free(request);
     free(response);
     return 0;
   }
+  
+  debug_log("run_chat_loop: buffers allocated");
 
   for (int loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
+    debug_log("run_chat_loop: loop %d", loop);
+    
     if (!build_request_json(history, request, REQUEST_BUFFER_SIZE)) {
       ui_add_message("Error:", "Request too large");
       free(request);
@@ -503,10 +534,12 @@ static int run_chat_loop(ChatHistory *history) {
       return 0;
     }
 
+    debug_log("run_chat_loop: request built");
     ui_set_status("Contacting Claude...");
     ui_render();
 
     if (!net_post_json(NINTENCODE_API_URL, request, response, RESPONSE_BUFFER_SIZE, error, sizeof(error))) {
+      debug_log("run_chat_loop: net_post_json failed: %s", error);
       /* Check for context length error - prune and retry */
       if (strstr(error, "Context too long") != NULL || strstr(error, "context_length") != NULL) {
         ui_add_message("System:", "Context too long, pruning history...");
@@ -523,9 +556,12 @@ static int run_chat_loop(ChatHistory *history) {
       return 0;
     }
 
+    debug_log("run_chat_loop: got response, parsing");
+    
     ToolUse tools[MAX_TOOL_CALLS];
     int tool_count = 0;
     if (!parse_response(response, history, tools, &tool_count)) {
+      debug_log("run_chat_loop: parse_response failed");
       ui_add_message("Error:", "Failed to parse response");
       ui_set_status("Ready");
       ui_render();
@@ -533,6 +569,8 @@ static int run_chat_loop(ChatHistory *history) {
       free(response);
       return 0;
     }
+
+    debug_log("run_chat_loop: parsed, tool_count=%d", tool_count);
 
     if (tool_count == 0) {
       ui_set_status("Ready");
@@ -542,6 +580,7 @@ static int run_chat_loop(ChatHistory *history) {
       return 1;
     }
 
+    debug_log("run_chat_loop: calling execute_tools");
     execute_tools(history, tools, tool_count);
     ui_set_status("Running tools...");
     ui_render();

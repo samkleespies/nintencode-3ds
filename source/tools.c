@@ -7,6 +7,7 @@
 
 #include "tools.h"
 #include "app_config.h"
+#include "debug_log.h"
 #include "json.h"
 #include "lua_runtime.h"
 
@@ -22,7 +23,7 @@
 #define PATH_MAX_LEN          512
 #define LIST_MAX_ENTRIES      500
 #define WRITE_FILE_MAX        32768
-#define JSON_MAX_TOKENS       128
+#define JSON_MAX_TOKENS       256
 
 /*
  * Helper to parse JSON input for tools.
@@ -167,22 +168,29 @@ static int tool_read_file(const char *input_json, char *output, size_t output_si
 }
 
 static int tool_write_file(const char *input_json, char *output, size_t output_size) {
+  debug_log("tool_write_file: starting");
+  
   jsmn_parser parser;
   jsmntok_t tokens[JSON_MAX_TOKENS];
   
   if (!parse_tool_input(input_json, &parser, tokens, JSON_MAX_TOKENS)) {
+    debug_log("tool_write_file: invalid input");
     snprintf(output, output_size, "Invalid input");
     return 0;
   }
 
   char path[PATH_MAX_LEN] = {0};
   if (!json_get_string(input_json, tokens, 0, "path", path, sizeof(path))) {
+    debug_log("tool_write_file: missing path");
     snprintf(output, output_size, "Missing path");
     return 0;
   }
   
+  debug_log("tool_write_file: path=%s", path);
+  
   char *content = malloc(WRITE_FILE_MAX);
   if (!content) {
+    debug_log("tool_write_file: malloc failed");
     snprintf(output, output_size, "Out of memory");
     return 0;
   }
@@ -190,20 +198,27 @@ static int tool_write_file(const char *input_json, char *output, size_t output_s
   
   if (!json_get_string(input_json, tokens, 0, "content", content, WRITE_FILE_MAX)) {
     free(content);
+    debug_log("tool_write_file: missing content");
     snprintf(output, output_size, "Missing content");
     return 0;
   }
 
+  debug_log("tool_write_file: content len=%d", (int)strlen(content));
+
   char full_path[PATH_MAX_LEN] = {0};
   if (!build_full_path(path, full_path, sizeof(full_path))) {
     free(content);
+    debug_log("tool_write_file: blocked path");
     snprintf(output, output_size, "Blocked path");
     return 0;
   }
 
+  debug_log("tool_write_file: opening %s", full_path);
+  
   FILE *file = fopen(full_path, "w");
   if (!file) {
     free(content);
+    debug_log("tool_write_file: fopen failed");
     snprintf(output, output_size, "Unable to write: %s", path);
     return 0;
   }
@@ -213,6 +228,7 @@ static int tool_write_file(const char *input_json, char *output, size_t output_s
   fclose(file);
   free(content);
   
+  debug_log("tool_write_file: wrote %d bytes", (int)content_len);
   snprintf(output, output_size, "Wrote %s (%zu bytes)", path, content_len);
   return 1;
 }
@@ -834,6 +850,8 @@ static int tool_run_lua(const char *input_json, char *output, size_t output_size
 
 int tool_execute(const char *name, const char *input_json,
                  char *output, size_t output_size) {
+  debug_log("tool_execute: name=%s", name);
+  
   if (strcmp(name, "read_file") == 0) {
     return tool_read_file(input_json, output, output_size);
   }

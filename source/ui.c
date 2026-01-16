@@ -114,6 +114,7 @@ void ui_init(void) {
   ui_add_line("");
   ui_add_line("           Model: Claude Sonnet 4.5");
   ui_add_line("");
+  ui_add_line("");
   
   ui_initialized = 1;
 }
@@ -175,13 +176,9 @@ void ui_render(void) {
     printf("%s\n", lines[i]);
   }
 
-  /* Bottom screen: controls and status */
+  /* Bottom screen: status only */
   consoleSelect(&bottomConsole);
   consoleClear();
-  
-  printf("\n");
-  printf("        A: Send Prompt\n");
-  printf("        START: Exit\n");
   
   /* Status at bottom, centered */
   printf("\x1b[28;0H");
@@ -198,10 +195,6 @@ void ui_render_thinking(void) {
   
   consoleSelect(&bottomConsole);
   consoleClear();
-  
-  printf("\n");
-  printf("        A: Send Prompt\n");
-  printf("        START: Exit\n");
   
   printf("\x1b[14;0H");
   printf("        \x1b[31m%s\x1b[0m Thinking...", spinner_frames[spinner_frame]);

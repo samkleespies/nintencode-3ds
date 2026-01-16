@@ -178,20 +178,23 @@ int json_token_streq(const char *json, const jsmntok_t *token, const char *value
 }
 
 static int json_skip_token(const jsmntok_t *tokens, int index) {
-  int i = index + 1;
-  if (tokens[index].type == JSMN_OBJECT) {
-    for (int j = 0; j < tokens[index].size; j++) {
-      i = json_skip_token(tokens, i);
-      i = json_skip_token(tokens, i);
+  /* Iterative version to avoid stack overflow on 3DS */
+  int skip_count = 1;  /* Number of tokens we need to skip */
+  int i = index;
+  
+  while (skip_count > 0) {
+    skip_count--;
+    
+    if (tokens[i].type == JSMN_OBJECT) {
+      /* Need to skip 2 tokens (key + value) for each member */
+      skip_count += tokens[i].size * 2;
+    } else if (tokens[i].type == JSMN_ARRAY) {
+      /* Need to skip 1 token for each element */
+      skip_count += tokens[i].size;
     }
-    return i;
+    i++;
   }
-  if (tokens[index].type == JSMN_ARRAY) {
-    for (int j = 0; j < tokens[index].size; j++) {
-      i = json_skip_token(tokens, i);
-    }
-    return i;
-  }
+  
   return i;
 }
 
