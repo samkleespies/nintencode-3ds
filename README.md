@@ -2,6 +2,14 @@
 
 An AI coding assistant for Nintendo 3DS powered by Claude. Ask it to make a game and it will write the Lua code and run it right on your 3DS.
 
+## Demo
+
+| **Ask for a game** | **Claude writes it** | **Play it on the 3DS** |
+|---|---|---|
+| ![Typing prompt](screenshots/05-keyboard.png) | ![Writing code](screenshots/03-tool-write.png) | ![Pong running](screenshots/04-pong-running.png) |
+
+Type a prompt with the stylus -> Claude writes Lua code -> game launches at 60fps on the top screen. Press SELECT to return to chat.
+
 ## What is this?
 
 Nintencode is a homebrew app that connects to the Anthropic Claude API directly from your 3DS. You type a prompt using the on-screen keyboard, Claude responds, and if you ask for a game, it writes the code and runs it immediately.
