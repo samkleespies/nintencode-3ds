@@ -4,6 +4,10 @@ An AI coding assistant for Nintendo 3DS powered by Claude. Ask it to make a game
 
 ## Demo
 
+![Nintencode 3DS Demo](screenshots/pong_demo.gif)
+
+*Type a prompt with the stylus. Claude writes a game in Lua. Play it on the 3DS.*
+
 | **Ask for a game** | **Claude writes it** | **Play it on the 3DS** |
 |---|---|---|
 | ![Typing prompt](screenshots/05-keyboard.png) | ![Writing code](screenshots/03-tool-write.png) | ![Pong running](screenshots/04-pong-running.png) |
