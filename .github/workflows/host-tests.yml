@@ -1,0 +1,11 @@
+name: Host filesystem tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: gcc -std=gnu11 -Wall -Wextra -Iinclude source/tools.c source/json.c tests/tools_host.c -o /tmp/nintencode-tools-test
+      - run: /tmp/nintencode-tools-test

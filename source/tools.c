@@ -364,28 +364,12 @@ static int tool_delete_file(const char *input_json, char *output, size_t output_
     return 0;
   }
 
-  struct stat st;
-  if (stat(full_path, &st) != 0) {
-    snprintf(output, output_size, "Not found: %s", path);
+  /* remove() handles files and empty directories without a separate path check. */
+  if (remove(full_path) != 0) {
+    snprintf(output, output_size, "remove failed: %s (%s)", path, strerror(errno));
     return 0;
   }
-
-  int result;
-  if (S_ISDIR(st.st_mode)) {
-    result = rmdir(full_path);
-    if (result != 0) {
-      snprintf(output, output_size, "rmdir failed (not empty?): %s", path);
-      return 0;
-    }
-    snprintf(output, output_size, "Deleted directory: %s", path);
-  } else {
-    result = remove(full_path);
-    if (result != 0) {
-      snprintf(output, output_size, "remove failed: %s", path);
-      return 0;
-    }
-    snprintf(output, output_size, "Deleted file: %s", path);
-  }
+  snprintf(output, output_size, "Deleted: %s", path);
   return 1;
 }
 
@@ -556,13 +540,14 @@ static int tool_grep_files(const char *input_json, char *output, size_t output_s
     char file_path[PATH_MAX_LEN];
     snprintf(file_path, sizeof(file_path), "%s/%s", full_path, entry->d_name);
     
-    /* Skip directories */
-    struct stat st;
-    if (stat(file_path, &st) != 0 || S_ISDIR(st.st_mode)) continue;
-    
-    /* Open and search file */
+    /* Inspect the opened file, so a path replacement cannot invalidate the check. */
     FILE *file = fopen(file_path, "r");
     if (!file) continue;
+    struct stat st;
+    if (fstat(fileno(file), &st) != 0 || !S_ISREG(st.st_mode)) {
+      fclose(file);
+      continue;
+    }
     
     char line[512];
     int line_num = 0;
